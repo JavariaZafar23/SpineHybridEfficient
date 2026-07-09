@@ -2,11 +2,6 @@
 
 **Frozen Self-Supervised Vision Transformers with Dual Encoders for Single-Stage 3D Vertebrae Instance Segmentation**
 
-> MSc Data Science(MSDS24021), 2026  
-> Submitted to: *Biomedical Signal Processing and Control* (Elsevier)
-
----
-
 ## Architecture
 
 ![SpineHybridEfficient Architecture](architecture.png)
