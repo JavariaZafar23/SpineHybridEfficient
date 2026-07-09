@@ -2,7 +2,7 @@
 
 **Frozen Self-Supervised Vision Transformers with Dual Encoders for Single-Stage 3D Vertebrae Instance Segmentation**
 
-> MSc Data Science with Advanced Research — University of Hertfordshire (MSDS24021), 2026  
+> MSc Data Science(MSDS24021), 2026  
 > Submitted to: *Biomedical Signal Processing and Control* (Elsevier)
 
 ---
@@ -11,7 +11,7 @@
 
 ![SpineHybridEfficient Architecture](architecture.png)
 
-**(A) Overall Architecture:** The input CT volume is processed by two parallel encoders — a frozen 3DINO ViT-Large encoder for global anatomical context and a trainable ResNet50 encoder for local spatial details. Their features are aligned and fused at a 4³ bottleneck, then decoded using skip connections and RT Blocks (applied at the top two decoder levels) to produce the final 26-class vertebra instance segmentation.
+**(A) Overall Architecture:** The input CT volume is processed by two parallel encoders a frozen 3DINO ViT-Large encoder for global anatomical context and a trainable ResNet50 encoder for local spatial details. Their features are aligned and fused at a 4³ bottleneck, then decoded using skip connections and RT Blocks (applied at the top two decoder levels) to produce the final 26-class vertebra instance segmentation.
 
 **(B) 3D Residual Transformer (RT) Block:** Combines a CNN path (Conv3D → BatchNorm → ReLU) with a Self-Attention path (LayerNorm → Q,K,V projection → Multi-Head Self-Attention → LayerNorm) residually, enabling both local and global feature reasoning at low spatial resolutions.
 
@@ -111,13 +111,13 @@ Training resumes automatically from the last checkpoint.
 
 ---
 
-## Inference at 256³
+## Inference³
 
 ```bash
 python src/inference/infer.py \
     --weights results/SpineHybridEfficient/best_model.pth \
     --input   /path/to/preprocessed/images \
-    --labels  /path/to/preprocessed_256/labels \
+    --labels  /path/to/preprocessed/labels \
     --cases   /path/to/combined_val.txt \
     --output  results/predictions \
     --roi     128 \
