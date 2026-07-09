@@ -111,7 +111,7 @@ Training resumes automatically from the last checkpoint.
 
 ---
 
-## Inference³
+## Inference
 
 ```bash
 python src/inference/infer.py \
@@ -122,20 +122,6 @@ python src/inference/infer.py \
     --output  results/predictions \
     --roi     128 \
     --overlap 0.5
-```
-
----
-
-## Citation
-
-```bibtex
-@article{zafar2026spinehybrid,
-  title   = {SpineHybridEfficient: Frozen Self-Supervised Vision Transformers
-             with Dual Encoders for 3D Vertebrae Instance Segmentation},
-  author  = {Zafar, Javaria},
-  journal = {Biomedical Signal Processing and Control (under review)},
-  year    = {2026}
-}
 ```
 
 ---
