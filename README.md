@@ -9,29 +9,11 @@
 
 ## Architecture
 
-```
-CT Volume (128³)
-        │
-   ┌────┴────┐
-   │         │
-[3DINO      [ResNet50
-ViT-Large   trainable]
-last 2 blk       │
-unfrozen]    skip1 (256ch @ 16³)
-   │         skip2 (512ch @  8³)
-   └────┬────┘
-        │
-   Fusion @ 4³ bottleneck
-        │
-   ┌────▼─────────────────┐
-   │  Decoder             │
-   │  RTUpBlock ×2        │
-   │  UpBlock   ×3        │
-   │  (NestedUNet + RT)   │
-   └──────────┬───────────┘
-              │
-       SegHead → 26 classes
-```
+![SpineHybridEfficient Architecture](architecture.png)
+
+**(A) Overall Architecture:** The input CT volume is processed by two parallel encoders — a frozen 3DINO ViT-Large encoder for global anatomical context and a trainable ResNet50 encoder for local spatial details. Their features are aligned and fused at a 4³ bottleneck, then decoded using skip connections and RT Blocks (applied at the top two decoder levels) to produce the final 26-class vertebra instance segmentation.
+
+**(B) 3D Residual Transformer (RT) Block:** Combines a CNN path (Conv3D → BatchNorm → ReLU) with a Self-Attention path (LayerNorm → Q,K,V projection → Multi-Head Self-Attention → LayerNorm) residually, enabling both local and global feature reasoning at low spatial resolutions.
 
 ---
 
@@ -42,7 +24,12 @@ unfrozen]    skip1 (256ch @ 16³)
 | UNETR | 0.3926 | 86M | Single |
 | ViT-Adapter-UNETR | 0.4160 | 43M | Single |
 | nnU-Net | 0.71 | ~32M | Single |
-| **SpineHybridEfficient (ours)** | **0.7845** | **31M** | **Single** |
+| **SpineHybridEfficient (ours)** | **0.7845** | **~33M** | **Single** |
+
+> **~33M trainable parameters breakdown:**
+> - 3DINO last 2 transformer blocks (unfrozen): ~24M  
+> - ResNet50 encoder: ~7M  
+> - Decoder + segmentation head: ~2M
 
 ---
 
@@ -57,6 +44,7 @@ VerSe 2019 + VerSe 2020: https://github.com/anjany/verse
 
 ```
 SpineHybridEfficient/
+├── architecture.png             ← model architecture diagram
 ├── src/
 │   ├── models/
 │   │   └── model.py             ← SpineHybridEfficient architecture
@@ -85,7 +73,7 @@ SpineHybridEfficient/
 ## Setup
 
 ```bash
-git clone https://github.com/ansmalik67/SpineHybridEfficient
+git clone https://github.com/JavariaZafar23/SpineHybridEfficient
 cd SpineHybridEfficient
 pip install -r requirements.txt
 ```
@@ -141,10 +129,10 @@ python src/inference/infer.py \
 ## Citation
 
 ```bibtex
-@article{riaz2026spinehybrid,
+@article{zafar2026spinehybrid,
   title   = {SpineHybridEfficient: Frozen Self-Supervised Vision Transformers
              with Dual Encoders for 3D Vertebrae Instance Segmentation},
-  author  = {Riaz, Ans},
+  author  = {Zafar, Javaria},
   journal = {Biomedical Signal Processing and Control (under review)},
   year    = {2026}
 }
