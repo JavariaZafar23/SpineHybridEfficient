@@ -1,0 +1,385 @@
+\documentclass[preprint,12pt,3p]{elsarticle}
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{makecell}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{enumitem}
+\usepackage{array}
+\usepackage{adjustbox}
+\usepackage{lineno}
+
+\definecolor{navyblue}{HTML}{1F3864}
+\definecolor{lightgreen}{HTML}{E8F5D8}
+\definecolor{darkgreen}{HTML}{2A5200}
+\definecolor{secgray}{HTML}{E4E4E4}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+
+\journal{Biomedical Signal Processing and Control}
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{SpineHybridEfficient: Frozen Self-Supervised Vision Transformers with Dual Encoders for Single-Stage 3D Vertebrae Instance Segmentation}
+
+\author[msds]{Javaria}
+\ead{javaria@example.edu}
+
+\affiliation[msds]{organization={Department of Data Science, MSDS Programme},
+            addressline={MSDS24021},
+            city={},
+            country={}}
+
+\begin{abstract}
+Automated instance segmentation of vertebrae in computed tomography (CT) is clinically essential for fracture grading, surgical planning, and spinal deformity assessment, yet remains challenging due to the high morphological similarity of up to 26 vertebrae within a single scan, large variation in field of view, and severe foreground--background imbalance (approximately 2.7\% versus 97.3\% of voxels). Existing state-of-the-art approaches typically rely on sequential multi-stage localization-then-segmentation pipelines, which propagate centroid errors across stages, or on fully supervised large transformer backbones that require complete end-to-end retraining on domain-specific data. This work presents SpineHybridEfficient, a single-stage, end-to-end framework that combines a \emph{frozen} 3DINO Vision Transformer (ViT-Large) encoder, pretrained via self-supervised learning on approximately 100{,}000 unlabelled three-dimensional medical scans, with a trainable convolutional ResNet encoder for local spatial detail. The two encoder streams are fused and decoded through a lightweight NestedUNet-style decoder augmented with three-dimensional Residual Transformer (RT) blocks. By freezing the 307-million-parameter self-supervised encoder, the proposed framework reduces the number of trainable parameters to approximately 10 million while achieving a validation Dice similarity coefficient (DSC) of 0.4160 on the combined VerSe 2019/2020 benchmark, matching a fully trained ViT-Adapter-UNETR baseline (43 million trainable parameters) and surpassing a standard UNETR baseline (DSC 0.3926). To the best of our knowledge, this is the first reported application of the 3DINO encoder to vertebral instance segmentation on the VerSe benchmark. Ten model variants spanning 2.5D versus 3D processing, frozen versus fine-tuned encoders, and two decoder architectures are evaluated to provide a systematic empirical analysis of frozen-encoder design choices for volumetric medical image segmentation.
+\end{abstract}
+
+\begin{keyword}
+Vertebrae segmentation \sep Self-supervised learning \sep Vision Transformer \sep 3DINO \sep Computed tomography \sep Instance segmentation \sep Frozen encoder \sep VerSe benchmark
+\end{keyword}
+
+\end{frontmatter}
+
+\linenumbers
+
+% =====================================================================
+\section{Introduction}
+\label{sec:intro}
+% =====================================================================
+
+The vertebral column comprises up to 26 distinct bones (C1--S1), each of which must be individually detected, anatomically labelled, and segmented at the voxel level in three-dimensional computed tomography (CT) images to support clinical tasks such as vertebral fracture grading \cite{sekuboyina2022}, pre-operative surgical planning, and longitudinal scoliosis monitoring. In contrast to conventional organ segmentation, vertebral \emph{instance} segmentation poses several distinct challenges. First, adjacent vertebrae share near-identical local appearance, so correct labelling requires reasoning over global spinal position rather than local texture alone. Second, vertebrae occupy only approximately 2.7\% of voxels in a typical scan, producing a severe foreground--background class imbalance that destabilizes na\"ive loss formulations. Third, transitional vertebrae such as L6 and T13 occur in a meaningful subset of patients and break the canonical 25-element anatomical chain, complicating models that assume a fixed vertebral count.
+
+Deep learning has become the dominant paradigm for medical image segmentation \cite{ronneberger2015,hatamizadeh2022}. The majority of high-performing vertebra segmentation systems adopt multi-stage pipelines, in which a localization network first estimates vertebral centroids, after which a separate segmentation network is conditioned on those centroids to produce the final masks \cite{payer2020,chen2020}. Although effective, such pipelines are inherently fragile: an error in the localization stage propagates directly into the segmentation stage, and the two networks must typically be trained and validated separately. More recent transformer-based single-stage models partially close this gap \cite{yang2023,vertdetect2023,montpetit2025}, but they generally require full end-to-end training of comparatively large backbones, often exceeding 80 million trainable parameters, which is computationally demanding and data-hungry.
+
+Self-supervised learning (SSL) offers an attractive alternative by providing transferable three-dimensional representations without requiring task-specific voxel-level annotation during pretraining. The 3DINO framework \cite{xu2025_3dino} adapts the DINOv2 self-distillation paradigm \cite{oquab2023} to volumetric medical inputs, pretraining a ViT-Large backbone on roughly 100{,}000 unlabelled three-dimensional medical scans. A natural but, to our knowledge, previously unexplored question is whether such a frozen, general-purpose 3D self-supervised encoder can serve as an effective global-context feature extractor for vertebral instance segmentation, substantially reducing the number of trainable parameters relative to fully supervised transformer baselines while retaining competitive segmentation accuracy.
+
+\subsection{Problem statement}
+Given a three-dimensional CT volume $\mathbf{X} \in \mathbb{R}^{H \times W \times D}$, the objective is to produce a voxel-wise label map $\hat{\mathbf{Y}} \in \{0, 1, \ldots, 25\}^{H \times W \times D}$ that assigns every voxel to either the background class or one of 25 individually labelled vertebrae, in a \emph{single} forward pass through the network, without recourse to a separate, prerequisite localization stage.
+
+\subsection{Contributions}
+The contributions of this work are summarized as follows.
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt,topsep=3pt]
+  \item \textbf{First application of 3DINO to the VerSe benchmark.} We demonstrate that frozen self-supervised 3D features can achieve segmentation accuracy competitive with fully trained transformer baselines, without any backbone fine-tuning.
+  \item \textbf{Dual-encoder fusion architecture.} A frozen 3DINO ViT-Large branch supplies global anatomical context, while a trainable ResNet branch supplies local spatial detail; the two streams are fused and decoded via a NestedUNet-style decoder augmented with three-dimensional Residual Transformer blocks, representing, to our knowledge, the first adaptation of TransNetR-style residual transformer blocks to volumetric medical segmentation.
+  \item \textbf{Parameter efficiency.} The proposed framework requires only approximately 10 million trainable parameters, a 4.3-fold reduction relative to a 43-million-parameter ViT-Adapter-UNETR baseline, while matching its validation Dice score.
+  \item \textbf{Systematic ablation study.} Ten model variants spanning 2.5D versus 3D processing, frozen versus fine-tuned encoders, and alternative decoder designs (NestedUNet+RT versus Primus PatchDecode) are evaluated to characterize the design space of frozen-encoder volumetric segmentation models.
+\end{enumerate}
+
+% =====================================================================
+\section{Problem Statement and Challenges}
+\label{sec:problem}
+% =====================================================================
+
+\subsection{Task definition}
+This work addresses \emph{instance} segmentation, in which each vertebra is assigned a unique, anatomically meaningful class label spanning C1 through S1, rather than \emph{semantic} (binary) segmentation, which treats all vertebrae collectively as a single foreground class. Formally, a model $f_\theta : \mathbb{R}^{H \times W \times D} \rightarrow \mathbb{R}^{26 \times H \times W \times D}$ produces per-class logits, and the final prediction is obtained as $\hat{\mathbf{Y}} = \arg\max_k f_\theta(\mathbf{X})$. This distinction is clinically important, as binary whole-spine segmentation cannot directly support per-level fracture grading or surgical level identification, whereas instance-level segmentation can.
+
+\subsection{Key challenges}
+\textbf{Foreground scarcity.} Vertebrae occupy approximately 2.7\% of voxels within a typical scan; unweighted loss functions tend to collapse toward trivial background prediction unless explicitly counteracted.
+
+\textbf{Inter-class similarity.} Adjacent vertebrae are visually near-identical in local appearance; correct class assignment fundamentally requires global positional context along the spinal column rather than purely local discriminative features.
+
+\textbf{Anatomical variability.} Transitional vertebrae, including L6 (present in approximately 10\% of patients) and T13 (present in approximately 8\% of patients), violate the standard 25-vertebra sequence and must be accommodated by the label space and evaluation protocol.
+
+\textbf{Memory constraints.} Processing full three-dimensional CT volumes at native resolution exceeds the memory capacity of a single consumer or research-grade GPU; patch-based or resolution-reduced processing is therefore a practical necessity.
+
+\subsection{Evaluation metric}
+Following the VerSe challenge protocol \cite{sekuboyina2022}, segmentation accuracy is reported as the mean per-vertebra, multi-class Dice similarity coefficient
+\begin{equation}
+\mathrm{DSC} = \frac{1}{K-1} \sum_{k=1}^{K-1} \frac{2\,|\hat{S}_k \cap S_k|}{|\hat{S}_k| + |S_k|}, \qquad K = 26,
+\label{eq:dsc}
+\end{equation}
+where $\hat{S}_k$ and $S_k$ denote the predicted and ground-truth voxel sets for vertebra class $k$, and the background class is excluded from averaging. We emphasize that this instance-level metric is \emph{distinct} from the binary, whole-spine Dice score reported in some prior studies \cite{ssae2022,alhamouri2025}, which artificially inflates reported scores by collapsing all 25 vertebrae into a single foreground class; results from these two evaluation protocols are not directly comparable and are explicitly distinguished throughout this paper.
+
+% =====================================================================
+\section{Dataset}
+\label{sec:dataset}
+% =====================================================================
+
+\subsection{VerSe 2019 + 2020}
+This work uses the combined VerSe 2019 and VerSe 2020 datasets \cite{sekuboyina2022}, the largest publicly available benchmark for vertebral instance segmentation. The combined dataset comprises 374 CT scans acquired from 355 patients, with voxel-level annotations covering 4{,}505 individually labelled vertebrae across 26 classes (background plus C1--S1). Scans were acquired using multi-detector CT scanners at multiple institutions, with substantial heterogeneity in field of view, slice thickness, and reconstruction kernel.
+
+\subsection{Data partitioning}
+The official challenge partition was followed: 243 scans for training, 52 scans for validation, and 53 scans reserved as a held-out test set. For architecture capacity sanity checks, an additional overfit-test protocol was used, comprising the first 100 training scans with an identical training and validation split, allowing model capacity to be probed independently of generalization performance.
+
+\subsection{Preprocessing}
+All CT volumes were resampled to $64^3$ voxels using trilinear interpolation for the intensity image and nearest-neighbour interpolation for the corresponding label map. Intensity values were linearly normalized to the range $[-1, 1]$ via $x' = 2x - 1$. Six scans containing the erroneous label value 28 (an artefact of S1 annotation) were corrected by remapping to label 25. Dataset statistics are summarized in Table~\ref{tab:dataset}.
+
+\begin{table}[h]
+\centering
+\caption{VerSe 2019+2020 dataset statistics.}
+\label{tab:dataset}
+\small
+\begin{tabular}{lc}
+\toprule
+\textbf{Property} & \textbf{Value} \\
+\midrule
+Total scans & 374 \\
+Total patients & 355 \\
+Total annotated vertebrae & 4{,}505 \\
+Vertebrae classes & 26 (background + C1--S1) \\
+Training scans & 243 \\
+Validation scans & 52 \\
+Test scans & 53 \\
+Input resolution & $64^3$ voxels (resampled) \\
+3DINO encoder input resolution & $112^3$ voxels \\
+Foreground voxel fraction & $\sim$2.7\% \\
+Background voxel fraction & $\sim$97.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Class imbalance mitigation}
+The severe background dominance (97.3\% of voxels) was addressed in two complementary ways: (i) the Dice loss component excludes the background class entirely from averaging, and (ii) the cross-entropy loss component assigns a reduced weight of 0.1 to the background class, encouraging the optimizer to prioritize correct classification of the sparse vertebral foreground.
+
+% =====================================================================
+\section{Related Work}
+\label{sec:related}
+% =====================================================================
+
+\subsection{Multi-stage pipelines}
+The dominant paradigm prior to 2022 coupled an explicit vertebra localization stage with a separate segmentation stage. Payer et al.\ \cite{payer2020} won the VerSe 2019 challenge (DSC 89.80\%, identification rate 94.25\%) using a three-stage pipeline consisting of a U-Net for coarse spine localization, a SpatialConfiguration-Net for centroid-based vertebra labelling, and a per-vertebra binary U-Net for final segmentation. Chen et al.\ \cite{chen2020} extended this strategy on VerSe 2020, incorporating a deep reasoning module that enforces sequential anatomical ordering constraints (DSC 91.72\%, identification rate 96.60\%). Bla\v{z}ekov\'{a} et al.\ \cite{blazekova2023} subsequently re-engineered the Payer training procedure, reaching DSC 92.64\%. A common limitation across these systems is error propagation: a single mislabelled centroid corrupts the downstream segmentation for the corresponding vertebra.
+
+\subsection{Integrated and iterative approaches}
+Laousy et al.\ \cite{laousy2023} proposed an anatomic consistency cycle that jointly optimizes localization, segmentation, and identification within an iterative loop (approximately 89.3\% DSC). A 3D multi-object convolutional network \cite{tomography2024} processed overlapping volumetric patches using a single shared backbone to estimate both centroids and segmentation masks simultaneously, reaching 94.0\% DSC. A dual-branch U-Net incorporating Mamba-based cranio-caudal sequence modelling together with 3D convolutional block attention modules \cite{semimamba2026}, trained in a teacher--student semi-supervised configuration, achieved 91.6\% DSC and 97.5\% identification accuracy.
+
+\subsection{Transformer-based single-stage methods}
+Tao and Zheng \cite{tao2022} proposed Spine-Transformers, a DETR-style set-prediction model performing simultaneous centroid and label prediction (approximately 88.9\% DSC, 93.1\% identification rate). VerteFormer \cite{yang2023} combined a Vision Transformer encoder with a 3D U-Net decoder, incorporating dedicated edge-detection and global-information-extraction blocks (DSC 86.86\%). VertDetect \cite{vertdetect2023} augmented a 3D convolutional network with a graph convolutional network explicitly modelling spine chain topology (DSC 88.2\%). WNet+ViT \cite{montpetit2025} reached 95.3\% DSC on the combined VerSe 2019/2020 dataset by incorporating anatomical variation attention together with patient metadata conditioning.
+
+\subsection{Binary and semantic segmentation}
+SSAE \cite{ssae2022} and Attention LinkNet \cite{alhamouri2025} report binary whole-spine Dice scores of 90.2\% and 96.85\%, respectively. As discussed in Section~\ref{sec:problem}, these results are obtained under a fundamentally different evaluation protocol that treats all vertebrae as a single foreground class, and are therefore not directly comparable to the instance-level Dice scores reported elsewhere in this work.
+
+\subsection{Self-supervised encoders for medical segmentation}
+The 3DINO framework \cite{xu2025_3dino} adapts the DINOv2 self-distillation paradigm \cite{oquab2023} to volumetric medical inputs, pretraining a ViT-Large backbone on approximately 100{,}000 unlabelled 3D medical scans. MedDINOv3 \cite{yuheng2025} performs domain-adaptive pretraining on 3.87 million axial CT slices with multi-scale token aggregation. TransNetR \cite{rahman2023} combines convolutional and transformer branches in a residual configuration for two-dimensional polyp segmentation. Primus \cite{wald2025_primus} demonstrates that a pure transformer encoder combined with a transposed-convolution decoder can match nnU-Net performance without any convolutional component.
+
+% =====================================================================
+\section{Comparative Analysis of Existing Approaches}
+\label{sec:comparison}
+% =====================================================================
+
+To contextualize the proposed framework relative to the existing literature, Table~\ref{tab:stages} compares all surveyed methods by number of pipeline stages, segmentation protocol (instance versus binary), reported Dice score, identification rate, and core architectural design. Each row explicitly indicates whether the reported metric corresponds to per-vertebra instance segmentation under the VerSe protocol or to binary whole-spine segmentation, as these two protocols are not directly comparable.
+
+\begin{table*}[t]
+\centering
+\caption{Stage-wise comparison of vertebra segmentation methods on the VerSe benchmark. The Segmentation Type column distinguishes Instance (per-vertebra, 26-class Dice, VerSe protocol) from Binary (whole-spine, single-class Dice). $\dagger$ denotes binary whole-spine Dice. $\ddagger$ denotes evaluation on the combined VerSe 2019+2020 dataset. The proposed method is highlighted.}
+\label{tab:stages}
+\small
+\renewcommand{\arraystretch}{1.15}
+\begin{adjustbox}{width=\textwidth}
+\begin{tabular}{L{3.0cm}C{1.8cm}C{1.5cm}C{1.3cm}C{1.4cm}C{2.0cm}L{5.0cm}}
+\toprule
+\rowcolor{navyblue}
+\textcolor{white}{\textbf{Method}} &
+\textcolor{white}{\textbf{Stages}} &
+\textcolor{white}{\textbf{Seg.\ type}} &
+\textcolor{white}{\textbf{DSC (\%)}} &
+\textcolor{white}{\textbf{ID rate}} &
+\textcolor{white}{\textbf{Dataset}} &
+\textcolor{white}{\textbf{Architecture}} \\
+\midrule
+\multicolumn{7}{l}{\cellcolor{secgray}\textit{Multi-stage (3+ steps)}} \\
+Payer et al.\ \cite{payer2020} & 3 & Instance & 89.80 & 94.25 & VerSe 2019 & SCN + per-vertebra U-Net \\
+Chen et al.\ \cite{chen2020} & 3 & Instance & \textbf{91.72} & \textbf{96.60} & VerSe 2020 & 3D U-Net + ResNet-50 + graph \\
+Bla\v{z}ekov\'{a} et al.\ \cite{blazekova2023} & 3 & Instance & 92.64 & --- & VerSe 2019/2020 & Refined Payer pipeline \\
+\midrule
+\multicolumn{7}{l}{\cellcolor{secgray}\textit{Two-stage / iterative}} \\
+Laousy et al.\ \cite{laousy2023} & Iter. & Instance & $\sim$89.3 & $\sim$94 & VerSe 2019/2020 & Iterative cycle + graph \\
+Mamba U-Net \cite{semimamba2026} & 2 & Instance & 91.6 & 97.5 & VerSe 2019/2020 & Semi-sup.\ + Mamba + CBAM \\
+\midrule
+\multicolumn{7}{l}{\cellcolor{secgray}\textit{Single-stage (end-to-end)}} \\
+3D Multi-Object CNN \cite{tomography2024} & 1 & Instance & 94.0 & --- & VerSe 2019/2020 & Patch CNN, joint centroid + mask \\
+Spine-Transformers \cite{tao2022} & 1 & Instance & 88.9 & 93.1 & VerSe 2019 & 3D DETR + segmentation net \\
+VerteFormer \cite{yang2023} & 1 & Instance & 86.86 & $\sim$89 & VerSe 2019/2020 & ViT encoder + 3D U-Net \\
+VertDetect \cite{vertdetect2023} & 1 & Instance & 88.2 & --- & VerSe 2019/2020 & 3D CNN + GCN \\
+WNet+ViT \cite{montpetit2025} & 1 & Instance & \textbf{95.3}$^\ddagger$ & $\sim$97 & VerSe 2019+2020 & WNet + ViT classifier \\
+SSAE \cite{ssae2022} & 1 & \textit{Binary} & 90.2$^\dagger$ & --- & VerSe 2019/2020 & Stacked sparse autoencoder \\
+Attention LinkNet \cite{alhamouri2025} & 1 & \textit{Binary} & 96.85$^\dagger$ & --- & VerSe 2019/2020 & EfficientNet-B7 + ResNet-152 \\
+\midrule
+\rowcolor{lightgreen}
+\textbf{Proposed (this work)} & \textbf{1} & \textbf{Instance} & \textbf{41.60} & --- & \textbf{VerSe 2019+2020} & \textbf{Frozen 3DINO + ResNet + NestedUNet+RT} \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\end{table*}
+
+It is important to note that the absolute Dice score of the proposed method (41.60\%) is lower than that of fully supervised multi-stage or large-backbone single-stage systems trained at full or near-full CT resolution. This gap is primarily attributable to the aggressive $64^3$ resolution reduction adopted in this study to accommodate single-GPU memory constraints, as well as the absence of any backbone fine-tuning; the central empirical claim of this work is parameter efficiency and architectural feasibility at a fixed, modest compute budget, rather than outright state-of-the-art accuracy. This trade-off is discussed further in Section~\ref{sec:results} and Section~\ref{sec:conclusion}.
+
+% =====================================================================
+\section{Proposed Method}
+\label{sec:method}
+% =====================================================================
+
+\subsection{Architecture overview}
+SpineHybridEfficient processes a $64^3$ CT patch through two parallel encoder branches whose outputs are fused and subsequently decoded to a $26 \times 64^3$ voxel-wise label map in a single forward pass. Figure~\ref{fig:arch} illustrates the complete pipeline.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{SpineHybridEfficientArchitecture.png}
+\caption{SpineHybridEfficient architecture. The left branch extracts frozen 3DINO ViT-Large features; the right branch extracts trainable ResNet features. Both feature streams are fused at the bottleneck and passed through a decoder with skip connections (dashed lines) to produce the final volumetric segmentation.}
+\label{fig:arch}
+\end{figure}
+
+\subsubsection{Encoder 1: frozen 3DINO ViT-Large}
+The 3DINO ViT-Large encoder \cite{xu2025_3dino} consists of 24 transformer blocks with an embedding dimension of 1024 and 16 attention heads, pretrained via self-supervised DINOv2-style distillation on approximately 100{,}000 unlabelled 3D medical scans. The input volume is resized to $112^3$ and tokenized using a patch size of $16^3$, yielding $7^3 = 343$ tokens. The resulting feature map $\mathbf{F}_{\text{DINO}} \in \mathbb{R}^{1024 \times 7^3}$ is linearly projected to 96 channels and spatially pooled to $4^3$. All 307 million parameters of this encoder remain frozen throughout training; no gradients are propagated through this branch.
+
+\subsubsection{Encoder 2: trainable ResNet}
+A 3D ResNet encoder processes the original $64^3$ patch directly, producing two intermediate skip feature maps, $\mathbf{S}_1 \in \mathbb{R}^{64 \times 16^3}$ and $\mathbf{S}_2 \in \mathbb{R}^{128 \times 8^3}$, together with a bottleneck projection to $4^3$ at 96 channels. This branch is responsible for capturing local texture, edge, and boundary information that complements the global anatomical context supplied by the frozen 3DINO branch.
+
+\subsubsection{Fusion and NestedUNet decoder with residual transformer blocks}
+The two encoder outputs, each of shape $96 \times 4^3$, are concatenated to form a $192 \times 4^3$ tensor and compressed back to 96 channels via a $1\times1\times1$ convolution. Decoding proceeds through a sequence of upsampling stages. At the two coarsest decoding stages, Residual Transformer (RT) blocks are used:
+\begin{equation}
+\mathbf{x}' = \mathrm{ReLU}\big( f_{\mathrm{CNN}}(\mathbf{x}) + f_{\mathrm{Attn}}(\mathbf{x}) + \mathbf{x} \big),
+\label{eq:rtblock}
+\end{equation}
+where $f_{\mathrm{CNN}}$ denotes a $3\times3\times3$ convolutional branch and $f_{\mathrm{Attn}}$ denotes a multi-head self-attention branch operating on the flattened spatial tokens at that resolution, followed by $2\times$ trilinear upsampling and skip-connection injection from the corresponding ResNet encoder stage. At the two finest decoding stages, plain convolutional upsampling blocks are used in place of RT blocks, since the token count at these higher resolutions renders full self-attention computationally prohibitive. A final $1\times1\times1$ convolutional segmentation head produces 26-channel voxel-wise class logits.
+
+\subsection{Training objective}
+The network is trained to minimize a composite loss combining a Dice loss term and a weighted cross-entropy term:
+\begin{equation}
+\mathcal{L} = \mathcal{L}_{\mathrm{Dice}} + \mathcal{L}_{\mathrm{CE}},
+\label{eq:loss}
+\end{equation}
+where $\mathcal{L}_{\mathrm{Dice}}$ is computed over the 25 foreground vertebra classes only (background excluded), and $\mathcal{L}_{\mathrm{CE}}$ is a standard voxel-wise cross-entropy loss in which the background class is assigned a reduced weight of 0.1, as motivated in Section~\ref{sec:dataset}.
+
+\subsection{Implementation details}
+The model was implemented in PyTorch and trained on a single NVIDIA RTX 4090 GPU (24~GB). Optimization used AdamW ($\beta_1 = 0.9$, $\beta_2 = 0.999$, weight decay $10^{-5}$) with a cosine annealing learning-rate schedule ($\eta_0 = 10^{-3}$, $\eta_{\min} = 10^{-6}$, $T_{\max} = 100$ epochs). Data augmentation consisted of random axis-aligned flips together with additive Gaussian noise ($\sigma = 0.02$). The frozen 3DINO encoder was executed in half precision (FP16) to reduce memory footprint, while the trainable ResNet encoder and decoder were trained in full precision.
+
+% =====================================================================
+\section{Experiments and Results}
+\label{sec:results}
+% =====================================================================
+
+\subsection{Experimental protocol}
+Two evaluation protocols were used. The \emph{overfit test} (OT) protocol uses the first 100 training scans with an identical train/validation split, and is intended to probe architectural capacity independently of generalization. The \emph{full training} protocol uses the official 194/49 (80/20) train/validation split derived from the 243 official training scans, and is intended to measure genuine generalization performance. All reported Dice scores follow Equation~\ref{eq:dsc} unless otherwise indicated.
+
+\subsection{Results}
+Table~\ref{tab:results} reports results for all evaluated variants, organized into four groups: external published baselines, an encoder-capacity ablation, 2.5D (axial-slice) experiments, 3D overfit-test experiments, and 3D full-training experiments.
+
+\begin{table*}[t]
+\centering
+\caption{Experimental results on VerSe 2019+2020. OT denotes the overfit-test protocol (100 scans, train = validation, used to probe architectural capacity). Full denotes the 194-train/49-validation (80/20) protocol, used to measure generalization. $\star$ indicates training that had not yet converged at time of reporting. $\dagger$ indicates a frozen encoder (no gradient propagation). The best full-training result is highlighted.}
+\label{tab:results}
+\small
+\renewcommand{\arraystretch}{1.15}
+\begin{adjustbox}{width=\textwidth}
+\begin{tabular}{L{3.3cm}L{2.3cm}L{2.1cm}L{3.2cm}C{1.2cm}C{1.2cm}C{1.0cm}C{1.2cm}}
+\toprule
+\rowcolor{navyblue}
+\textcolor{white}{\textbf{Model}} &
+\textcolor{white}{\textbf{Encoder 1}} &
+\textcolor{white}{\textbf{Encoder 2}} &
+\textcolor{white}{\textbf{Decoder}} &
+\textcolor{white}{\textbf{Train DSC}} &
+\textcolor{white}{\textbf{Val DSC}} &
+\textcolor{white}{\textbf{Epoch}} &
+\textcolor{white}{\textbf{Setting}} \\
+\midrule
+\multicolumn{8}{l}{\cellcolor{secgray}\textit{External baselines (published)}} \\
+UNETR \cite{hatamizadeh2022} & ViT-L (fully trained) & --- & CNN progressive & --- & 0.3926 & 100 & Full \\
+ViT-Adapter-UNETR & ViT-L + adapters & --- & CNN progressive & --- & 0.4160 & 100 & Full \\
+\midrule
+\multicolumn{8}{l}{\cellcolor{secgray}\textit{Ablation: 3DINO encoder capacity}} \\
+Linear head & 3DINO ViT-L$^\dagger$ & --- & Linear projection & --- & 0.0212 & --- & Full \\
+\midrule
+\multicolumn{8}{l}{\cellcolor{secgray}\textit{2.5D experiments (axial slices)}} \\
+DINOv2 2.5D + R50 & DINOv2 ViT-B/14 & ResNet50 MedNet & NestedUNet+RT & 0.1118 & 0.0488 & 50 & OT \\
+MedDINOv3 2.5D + R50 & MedDINOv3 ViT-B & ResNet50 MedNet & NestedUNet+RT & 0.4524 & 0.1399 & 50 & OT \\
+\midrule
+\multicolumn{8}{l}{\cellcolor{secgray}\textit{3D overfit tests (100 scans, train = val)}} \\
+SpineHybridEff & 3DINO ViT-L$^\dagger$ & ResNet10 (scratch) & NestedUNet+RT & 0.7085 & \textbf{0.4557} & 50 & OT \\
+SpineHybridPrimus & 3DINO ViT-L$^\dagger$ & ResNet50 (scratch) & Primus PatchDecode & 0.5621 & 0.4255 & 50 & OT \\
+SpineHybridV2-R50 & 3DINO ViT-L$^\dagger$ & ResNet50 (scratch) & NestedUNet+RT & 0.7275 & 0.4099 & 50 & OT \\
+SpineHybridV2-MedNet & 3DINO ViT-L$^\dagger$ & ResNet50 MedNet & NestedUNet+RT & 0.7187 & 0.3959 & 50 & OT \\
+\midrule
+\multicolumn{8}{l}{\cellcolor{secgray}\textit{3D full training (194 train / 49 val)}} \\
+\rowcolor{lightgreen}
+\textbf{SpineHybridEff (Full)} & \textbf{3DINO ViT-L$^\dagger$} & \textbf{ResNet10 (scratch)} & \textbf{NestedUNet+RT} & --- & \textbf{0.4160} & \textbf{100} & \textbf{Full} \\
+3DINO + Primus & 3DINO ViT-L$^\dagger$ & --- & Primus PatchDecode & 0.4154 & 0.2790 & 43$^\star$ & 80/20 \\
+3DINO fine-tune & 3DINO ViT-L (last 4 blk) & ResNet50 (scratch) & NestedUNet+RT & 0.5979 & 0.3521 & 27 & OT \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\end{table*}
+
+\subsection{Analysis}
+
+\textbf{3D versus 2.5D processing.} The best-performing 3D model (DSC 0.4557, overfit-test protocol) outperforms the best 2.5D, axial-slice-based model (DSC 0.1399) by a factor of approximately 3.3, confirming that volumetric context is essential for accurate vertebral labelling and that slice-wise processing discards information critical to correct instance assignment.
+
+\textbf{Domain-specific versus natural-image pretraining.} The CT-pretrained MedDINOv3 encoder outperforms the natural-image-pretrained DINOv2 encoder by approximately a factor of three under otherwise identical 2.5D conditions (0.1399 versus 0.0488 DSC), underscoring the importance of domain-matched self-supervised pretraining for medical volumetric data.
+
+\textbf{Frozen self-supervised features versus full supervision.} The proposed SpineHybridEfficient model, trained under the full protocol, achieves DSC 0.4160 with only approximately 10 million trainable parameters, matching the 43-million-parameter ViT-Adapter-UNETR baseline. This represents a 4.3-fold reduction in trainable parameters for equivalent validation accuracy under the conditions tested.
+
+\textbf{Decoder architecture comparison.} Under the overfit-test protocol, the NestedUNet+RT decoder (DSC 0.4557) outperforms the Primus PatchDecode decoder (DSC 0.4255). This suggests that the explicit skip connections from the trainable ResNet encoder, which the NestedUNet+RT decoder exploits, are effective in recovering fine spatial detail that is otherwise lost at the $4^3$ fusion bottleneck.
+
+\textbf{Effect of partial fine-tuning.} Unfreezing the final four transformer blocks of the 3DINO encoder yields DSC 0.3521 after 27 epochs under the overfit-test protocol, below the frozen-encoder result of 0.4557 obtained under the same protocol at 50 epochs. This indicates that partial fine-tuning, at least within the epoch budget evaluated here, does not straightforwardly improve upon the frozen-encoder configuration, and may require substantially more training data and a longer training schedule to overcome the disruption to the pretrained representation that fine-tuning initially introduces.
+
+% =====================================================================
+\section{Architectural Comparison with Prior Work}
+\label{sec:architecture-comparison}
+% =====================================================================
+
+Table~\ref{tab:comparison} compares the proposed SpineHybridEfficient framework against the most architecturally relevant prior methods across a set of key design properties, including the use of a frozen self-supervised encoder, dual-encoder fusion, prior application to the VerSe benchmark, the number of trainable parameters, the presence of skip connections, the use of three-dimensional residual transformer blocks, and whether the method operates in a single processing stage.
+
+\begin{table}[h]
+\centering
+\caption{Architectural property comparison. A check mark indicates the property is present; a cross indicates it is absent.}
+\label{tab:comparison}
+\small
+\setlength{\tabcolsep}{3pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{L{2.4cm}C{1.0cm}C{1.2cm}C{1.2cm}C{1.2cm}C{1.3cm}}
+\toprule
+\rowcolor{navyblue}
+\textcolor{white}{\textbf{Property}} &
+\textcolor{white}{\textbf{UNETR}} &
+\textcolor{white}{\textbf{ViT-Ad.}} &
+\textcolor{white}{\textbf{Verte-F.}} &
+\textcolor{white}{\textbf{Vert-Det.}} &
+\textcolor{white}{\textbf{Proposed}} \\
+\midrule
+Frozen SSL encoder & $\times$ & $\times$ & $\times$ & $\times$ & \cellcolor{lightgreen}\checkmark \\
+Dual encoder & $\times$ & $\times$ & $\times$ & $\times$ & \cellcolor{lightgreen}\checkmark \\
+First on VerSe & $\times$ & $\times$ & $\times$ & $\times$ & \cellcolor{lightgreen}\checkmark \\
+Trainable params & $\sim$86M & $\sim$43M & $\sim$85M & $\sim$60M & \cellcolor{lightgreen}\textbf{$\sim$10M} \\
+Skip connections & \checkmark & \checkmark & \checkmark & $\times$ & \cellcolor{lightgreen}\checkmark \\
+3D RT blocks & $\times$ & $\times$ & $\times$ & $\times$ & \cellcolor{lightgreen}\checkmark \\
+Single stage & \checkmark & \checkmark & \checkmark & \checkmark & \cellcolor{lightgreen}\checkmark \\
+Validation DSC & 0.3926 & 0.4160 & --- & --- & \cellcolor{lightgreen}\textbf{0.4160} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+% =====================================================================
+\section{Limitations}
+\label{sec:limitations}
+% =====================================================================
+
+This study has several limitations that should inform interpretation of the reported results and guide future work. First, the $64^3$ resolution used throughout training, dictated by single-GPU memory constraints, discards substantial fine anatomical detail relative to the near-native resolution used by several competing multi-stage methods, and is the principal factor limiting absolute Dice score relative to the state of the art (Section~\ref{sec:comparison}). Second, the frozen 3DINO encoder, while parameter-efficient, was not pretrained specifically on spinal CT data, and a domain-adapted or partially fine-tuned variant, trained with a substantially larger dataset and longer schedule than evaluated in Section~\ref{sec:results}, may close part of the observed accuracy gap. Third, the evaluation in this work does not yet include the official held-out VerSe test set or external multi-institutional validation, and reported scores are accordingly internal validation results rather than leaderboard submissions. Finally, identification-rate metrics, which assess whether each predicted vertebra is assigned the anatomically correct label independent of segmentation overlap, were not computed in this study and represent an important direction for future evaluation.
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% =====================================================================
+
+This paper presented SpineHybridEfficient, to our knowledge the first framework to apply the 3DINO self-supervised volumetric encoder to vertebral instance segmentation on the VerSe benchmark. By freezing the 307-million-parameter self-supervised encoder and training only a lightweight, approximately 10-million-parameter ResNet encoder and decoder, the proposed method matches the validation Dice score of a fully trained, 43-million-parameter ViT-Adapter-UNETR baseline, a 4.3-fold reduction in trainable parameters. The proposed three-dimensional Residual Transformer blocks extend TransNetR-style residual attention to volumetric medical segmentation for the first time. A systematic set of ten experimental variants, spanning 2.5D and 3D processing, frozen and partially fine-tuned encoders, and two decoder architectures, provides practical guidance for the design of frozen-encoder volumetric segmentation systems. As discussed in Section~\ref{sec:limitations}, the absolute segmentation accuracy obtained at the $64^3$ working resolution used in this study remains below that of full-resolution, fully supervised, multi-stage state-of-the-art systems; future work will accordingly explore multi-scale 3DINO feature extraction, fine-tuning on larger spine-specific datasets, evaluation at higher input resolution via patch-based and sliding-window inference, and extension of the framework to downstream tasks such as vertebral fracture detection and grading.
+
+% =====================================================================
+\section*{Acknowledgements}
+% =====================================================================
+The author thanks the supervising faculty for guidance throughout the design, implementation, and evaluation of this work.
+
+% =====================================================================
+\section*{Declaration of competing interest}
+% =====================================================================
+The author declares no known competing financial interests or personal relationships that could have appeared to influence the work reported in this paper.
+
+\bibliographystyle{elsarticle-num}
+\bibliography{references}
+
+\end{document}

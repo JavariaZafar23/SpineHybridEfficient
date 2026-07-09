@@ -1,0 +1,40 @@
+# Data and weights — too large for GitHub
+data/
+preprocessed/
+preprocessed_256/
+*.npy
+*.nii.gz
+*.nii
+*.pth
+*.pt
+*.bin
+results/*/best_model.pth
+results/*/latest_checkpoint.pth
+results/*/latest_checkpoint.pth.tmp
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+*.egg-info/
+
+# Logs (keep results/logs/ folder but ignore large log files)
+*.log
+*.tmp
+
+# Environments
+.env
+jenv/
+miniconda3/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
